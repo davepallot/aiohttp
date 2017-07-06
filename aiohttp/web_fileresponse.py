@@ -35,7 +35,13 @@ class SendfilePayloadWriter(PayloadWriter):
     def _sendfile_cb(self, fut, out_fd, in_fd,
                      offset, count, loop, registered):
         if registered:
-            loop.remove_writer(out_fd)
+            try:
+                loop.remove_writer(out_fd)
+            except Exception as e:
+                if not fut.cancelled():
+                    fut.set_exception(e)
+                return
+
         if fut.cancelled():
             return
 
@@ -50,8 +56,12 @@ class SendfilePayloadWriter(PayloadWriter):
             return
 
         if n < count:
-            loop.add_writer(out_fd, self._sendfile_cb, fut, out_fd, in_fd,
-                            offset + n, count - n, loop, True)
+            try:
+                loop.add_writer(out_fd, self._sendfile_cb, fut, out_fd, in_fd,
+                                offset + n, count - n, loop, True)
+            except Exception as e:
+                fut.set_exception(e)
+                return
         else:
             fut.set_result(None)
 
@@ -63,7 +73,8 @@ class SendfilePayloadWriter(PayloadWriter):
 
             yield from self._drain_waiter
 
-        out_socket = self._transport.get_extra_info("socket").dup()
+        orig_socket = self._transport.get_extra_info("socket")
+        out_socket = orig_socket.dup()
         out_socket.setblocking(False)
         out_fd = out_socket.fileno()
         in_fd = fobj.fileno()
@@ -76,6 +87,10 @@ class SendfilePayloadWriter(PayloadWriter):
             self._sendfile_cb(fut, out_fd, in_fd, offset, count, loop, False)
             yield from fut
         except:
+            try:
+                loop.remove_writer(out_fd)
+            except:
+                pass
             server_logger.debug('Socket error')
             self._transport.close()
         finally:
